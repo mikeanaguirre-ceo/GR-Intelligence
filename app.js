@@ -53,56 +53,7 @@ const ACTIVE_CLIENTS = {
   }
 };
 
-const ALERTS = [
-  {
-    level: 'crit',
-    title: 'AM-Kio VENCE JUN',
-    meta: 'Aaron Cruz · Won $10K/año',
-    body: 'Renovación crítica. Confirmar renovación antes de fin de junio. Aaron Cruz es el contacto principal.'
-  },
-  {
-    level: 'crit',
-    title: 'HS_UDG VENCE 31-may',
-    meta: '42 días para vencimiento',
-    body: 'HubSpot Universidad de Guadalajara vence el 31 de mayo. Iniciar conversación de renovación ahora.'
-  },
-  {
-    level: 'crit',
-    title: 'STIL Facturas mar+abr',
-    meta: 'HOY · Emitir con Fer',
-    body: 'Emitir facturas de marzo y abril de STIL. Coordinar con Fer. Estela Escalante esperando.'
-  },
-  {
-    level: 'crit',
-    title: 'IMMMU Factura abril',
-    meta: 'HOY · María Santoyo',
-    body: 'Emitir factura de abril para IMMMU. Contactar a María Santoyo para confirmar datos.'
-  },
-  {
-    level: 'imp',
-    title: 'GPV ITS $100K sin respuesta',
-    meta: 'Propuesta 13-abr · sin respuesta hace 9 días',
-    body: 'Propuesta ITS GPV enviada el 13-abr. Sin respuesta. Contactar a Ney Galicia por WhatsApp o llamada.'
-  },
-  {
-    level: 'imp',
-    title: 'PepsiCo DEMO 23-abr',
-    meta: 'Mañana · preparar demo',
-    body: 'Demo con PepsiCo mañana 23-abr. Preparar materiales, confirmar asistentes, repasar caso de uso.'
-  },
-  {
-    level: 'op',
-    title: '8 Interested sin deal HS',
-    meta: 'Martha + Migue · HOY',
-    body: '8 replies Interested de Amplemarket sin deal creado en HubSpot. Revisar en AM y crear deals hoy.'
-  },
-  {
-    level: 'op',
-    title: '17 Open+3 sin deal',
-    meta: '13 LT + 4 AEO · Martha HOY',
-    body: '17 señales Open+3 pendientes: 13 de Legacy Takeover, 4 de AEO. Martha revisar y crear deals.'
-  }
-];
+// ALERTS: se genera dinámicamente desde DATA.deals + TASKS en buildAlerts()
 
 // --- State ---
 let DATA = null;
@@ -333,18 +284,43 @@ function renderOverview() {
 }
 
 // --- PIPELINE ---
+// Orden de stages para Kanban (columnas de izquierda a derecha)
+const STAGE_ORDER = [
+  { key: '1332596063', label: 'Contactado', id: '1332596063' },
+  { key: '1332596064', label: 'En Conv.',   id: '1332596064' },
+  { key: 'appointmentscheduled', label: 'Atracción', id: 'appointmentscheduled' },
+  { key: 'qualifiedtobuy', label: 'Educación', id: 'qualifiedtobuy' },
+  { key: 'presentationscheduled', label: 'Propuesta', id: 'presentationscheduled' },
+  { key: 'decisionmakerboughtin', label: 'Aprobación', id: 'decisionmakerboughtin' }
+];
+
 function renderPipeline() {
   const prods = ['ALL', ...new Set(DATA.deals.map(d => d.prod).filter(Boolean))];
   const owners = ['ALL', ...new Set(DATA.deals.map(d => d.owner).filter(Boolean))];
 
-  let filtered = DATA.deals.filter(d => {
+  const filtered = DATA.deals.filter(d => {
     if (pipelineFilters.prod !== 'ALL' && d.prod !== pipelineFilters.prod) return false;
     if (pipelineFilters.owner !== 'ALL' && d.owner !== pipelineFilters.owner) return false;
     if (pipelineFilters.excludeP && d.name.startsWith('P_')) return false;
+    // Excluir Closed Won y Perdida del Kanban de pipeline activo
+    if (d.stage === 'closedwon' || d.stage === '1092009814') return false;
     return true;
-  }).sort((a, b) => (b.amount || 0) - (a.amount || 0));
+  });
 
   const total = filtered.reduce((s, d) => s + (d.amount || 0), 0);
+
+  // Agrupar por stage
+  const byStage = {};
+  STAGE_ORDER.forEach(s => byStage[s.key] = []);
+  const otros = [];
+  filtered.forEach(d => {
+    const key = STAGE_ORDER.find(s => s.id === d.stage)?.key;
+    if (key) byStage[key].push(d);
+    else otros.push(d);
+  });
+  // Ordenar dentro de cada columna por monto descendente
+  Object.values(byStage).forEach(arr => arr.sort((a, b) => (b.amount || 0) - (a.amount || 0)));
+  otros.sort((a, b) => (b.amount || 0) - (a.amount || 0));
 
   let html = `
     <div class="section">
@@ -358,26 +334,64 @@ function renderPipeline() {
         <button class="chip ${pipelineFilters.excludeP ? 'active' : ''}" data-pfilter="excludeP" data-pval="toggle">Excluir P_</button>
       </div>
       <div class="section-title">
-        <span class="section-count">${filtered.length} deals</span>
+        <span class="section-count">${filtered.length} deals activos</span>
         <span style="margin-left:auto;color:var(--text-dim);font-size:12px;">Total: <strong style="color:var(--text);">${fmtK(total)}</strong></span>
       </div>
-      <table class="tbl">
-        <thead><tr><th>Deal</th><th>Stage</th><th>Owner</th><th>Close</th><th class="num">Monto</th></tr></thead>
-        <tbody>
+      <div class="kanban">
   `;
-  filtered.slice(0, 100).forEach(d => {
-    html += `<tr>
-      <td>${d.name}</td>
-      <td>${tagForStage(d.stage, d.stageLabel)}</td>
-      <td>${d.owner || '—'}</td>
-      <td>${d.closedate || '—'}</td>
-      <td class="num">${fmt(d.amount)}</td>
-    </tr>`;
+
+  STAGE_ORDER.forEach(s => {
+    const col = byStage[s.key];
+    const colTotal = col.reduce((sum, d) => sum + (d.amount || 0), 0);
+    html += `
+      <div class="kanban-col">
+        <div class="kanban-col-header">
+          <div class="kanban-col-title">${s.label}</div>
+          <div class="kanban-col-count">${col.length} · ${fmtK(colTotal)}</div>
+        </div>
+        <div class="kanban-col-body">
+    `;
+    if (col.length === 0) {
+      html += `<div class="kanban-empty">—</div>`;
+    } else {
+      col.slice(0, 40).forEach(d => {
+        const days = d.closedate ? daysUntil(d.closedate) : null;
+        const dateClass = days !== null && days < 0 ? 'kanban-date-late' : '';
+        html += `
+          <div class="kanban-card">
+            <div class="kanban-card-name">${d.name}</div>
+            <div class="kanban-card-meta">
+              <span class="kanban-card-amount">${fmtK(d.amount)}</span>
+              <span class="kanban-card-owner">${d.owner || '—'}</span>
+            </div>
+            ${d.closedate ? `<div class="kanban-card-date ${dateClass}">${d.closedate}</div>` : ''}
+          </div>
+        `;
+      });
+      if (col.length > 40) {
+        html += `<div class="kanban-empty">+ ${col.length - 40} más</div>`;
+      }
+    }
+    html += `</div></div>`;
   });
-  html += `</tbody></table>`;
-  if (filtered.length > 100) {
-    html += `<div class="empty" style="padding:12px;font-size:11px;">Mostrando top 100 de ${filtered.length}</div>`;
+
+  html += `</div>`;
+
+  if (otros.length > 0) {
+    html += `<div class="section-title" style="margin-top:20px;">Otros stages <span class="section-count">${otros.length}</span></div>
+      <table class="tbl"><thead><tr><th>Deal</th><th>Stage</th><th>Owner</th><th>Close</th><th class="num">Monto</th></tr></thead><tbody>`;
+    otros.slice(0, 20).forEach(d => {
+      html += `<tr>
+        <td>${d.name}</td>
+        <td>${tagForStage(d.stage, d.stageLabel)}</td>
+        <td>${d.owner || '—'}</td>
+        <td>${d.closedate || '—'}</td>
+        <td class="num">${fmt(d.amount)}</td>
+      </tr>`;
+    });
+    html += `</tbody></table>`;
   }
+
   html += `</div>`;
   $('#p-pipeline').innerHTML = html;
 
@@ -618,12 +632,146 @@ function renderPendientes() {
 }
 
 // --- ALERTAS ---
+// Genera alertas dinámicamente desde DATA.deals + TASKS
+function buildAlerts() {
+  const alerts = [];
+  const hoy = new Date();
+  hoy.setHours(0, 0, 0, 0);
+
+  // --- 1. Renovaciones próximas: tareas con "Renovación" o "VENCE" en el título ---
+  const renovaciones = [];
+  if (TASKS && TASKS.tareas) {
+    for (const [persona, tareas] of Object.entries(TASKS.tareas)) {
+      tareas.forEach(t => {
+        if (/(VENCE|Renovación|URGENTE.*ren)/i.test(t.title)) {
+          const days = daysUntil(t.date);
+          if (days !== null && days <= 90 && days >= -30) {
+            renovaciones.push({ ...t, persona, days });
+          }
+        }
+      });
+    }
+  }
+  // Dedup por cliente+date (evita la misma renovación aparezca 3 veces)
+  const renSeen = new Set();
+  const renUnicas = [];
+  renovaciones.sort((a, b) => a.days - b.days).forEach(r => {
+    const key = r.client + '|' + r.date;
+    if (!renSeen.has(key)) { renSeen.add(key); renUnicas.push(r); }
+  });
+
+  renUnicas.slice(0, 6).forEach(r => {
+    const level = r.days < 0 ? 'crit' : (r.days <= 30 ? 'crit' : 'imp');
+    const diasTxt = r.days < 0 ? `VENCIDA hace ${Math.abs(r.days)} días` :
+                     r.days === 0 ? 'VENCE HOY' :
+                     `${r.days} días para vencimiento`;
+    alerts.push({
+      level,
+      title: `Renovación — ${r.client}`,
+      meta: `${diasTxt} · ${r.persona}`,
+      body: r.title
+    });
+  });
+
+  // --- 2. Propuestas sin movimiento (stage = Propuesta Enviada, closedate < hoy) ---
+  const propuestasVencidas = DATA.deals.filter(d =>
+    d.stage === 'presentationscheduled' &&
+    d.closedate &&
+    daysUntil(d.closedate) < 0
+  ).sort((a, b) => (b.amount || 0) - (a.amount || 0));
+
+  propuestasVencidas.slice(0, 5).forEach(d => {
+    const dias = Math.abs(daysUntil(d.closedate));
+    alerts.push({
+      level: 'imp',
+      title: `${d.name} — Propuesta sin respuesta`,
+      meta: `Close date vencido hace ${dias} días · ${fmtK(d.amount)}`,
+      body: `Propuesta enviada a ${d.owner || 'cliente'}. Close date era ${d.closedate}. Hacer seguimiento urgente.`
+    });
+  });
+
+  // --- 3. Deals altos con close date pasada (cualquier stage activo) ---
+  const dealsVencidos = DATA.deals.filter(d => {
+    if (d.stage === 'closedwon' || d.stage === '1092009814') return false;
+    if (d.stage === 'presentationscheduled') return false; // ya contados arriba
+    if (!d.closedate) return false;
+    if ((d.amount || 0) < 20000) return false;
+    return daysUntil(d.closedate) < 0;
+  }).sort((a, b) => (b.amount || 0) - (a.amount || 0));
+
+  dealsVencidos.slice(0, 4).forEach(d => {
+    const dias = Math.abs(daysUntil(d.closedate));
+    alerts.push({
+      level: 'imp',
+      title: `${d.name} — Deal con fecha vencida`,
+      meta: `${d.stageLabel || d.stage} · Close ${d.closedate} (hace ${dias} días) · ${fmtK(d.amount)}`,
+      body: `Deal de ${fmtK(d.amount)} en ${d.stageLabel || d.stage}. Close date pasada. Revisar con ${d.owner || 'owner'} si sigue activo.`
+    });
+  });
+
+  // --- 4. Tareas HIGH vencidas (top 5 más viejas) ---
+  if (TASKS && TASKS.tareas) {
+    const tareasVencidasHigh = [];
+    for (const [persona, tareas] of Object.entries(TASKS.tareas)) {
+      tareas.forEach(t => {
+        if (t.urgency === 'vencida' && t.priority === 'HIGH') {
+          tareasVencidasHigh.push({ ...t, persona });
+        }
+      });
+    }
+    tareasVencidasHigh.sort((a, b) => a.date.localeCompare(b.date));
+
+    // Agrupar por persona para evitar saturar
+    const porPersona = {};
+    tareasVencidasHigh.forEach(t => {
+      porPersona[t.persona] = (porPersona[t.persona] || 0) + 1;
+    });
+
+    // Una alerta resumen por persona con >= 5 HIGH vencidas
+    Object.entries(porPersona)
+      .filter(([, n]) => n >= 5)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 4)
+      .forEach(([persona, n]) => {
+        alerts.push({
+          level: 'op',
+          title: `${persona} — ${n} tareas HIGH vencidas`,
+          meta: `Revisar en tab Pendientes filtrando por ${persona}`,
+          body: `${persona} tiene ${n} tareas marcadas HIGH con fecha pasada. Depurar: cerrar las completadas, repriorizar el resto.`
+        });
+      });
+  }
+
+  // --- 5. Deals grandes (>=$40K) sin actividad o sin owner ---
+  const grandesSinOwner = DATA.deals.filter(d =>
+    (d.amount || 0) >= 40000 &&
+    d.stage !== 'closedwon' &&
+    d.stage !== '1092009814' &&
+    !d.owner
+  );
+  if (grandesSinOwner.length > 0) {
+    alerts.push({
+      level: 'op',
+      title: `${grandesSinOwner.length} deal(s) grandes sin owner`,
+      meta: `${fmtK(grandesSinOwner.reduce((s, d) => s + (d.amount || 0), 0))} en juego · asignar HOY`,
+      body: grandesSinOwner.slice(0, 5).map(d => `· ${d.name} (${fmtK(d.amount)})`).join('<br>')
+    });
+  }
+
+  return alerts;
+}
+
 function renderAlertas() {
+  const alertList = buildAlerts();
   const grouped = {
-    crit: ALERTS.filter(a => a.level === 'crit'),
-    imp: ALERTS.filter(a => a.level === 'imp'),
-    op: ALERTS.filter(a => a.level === 'op')
+    crit: alertList.filter(a => a.level === 'crit'),
+    imp: alertList.filter(a => a.level === 'imp'),
+    op: alertList.filter(a => a.level === 'op')
   };
+
+  // Actualizar badge en la tab
+  const badge = $('#alerts-count');
+  if (badge) badge.textContent = alertList.length;
 
   let html = '';
   const groups = [
@@ -631,7 +779,8 @@ function renderAlertas() {
     ['imp', 'IMPORTANTES', 'imp'],
     ['op', 'OPERATIVAS', 'op']
   ];
-  groups.forEach(([key, label, bdg]) => {
+  groups.forEach(([key, label]) => {
+    if (grouped[key].length === 0) return;
     html += `<div class="section">
       <div class="section-title">${label} <span class="section-count">${grouped[key].length}</span></div>`;
     grouped[key].forEach((a, i) => {
@@ -646,6 +795,11 @@ function renderAlertas() {
     });
     html += `</div>`;
   });
+
+  if (alertList.length === 0) {
+    html = `<div class="section"><div class="empty">Sin alertas activas. Todo bajo control.</div></div>`;
+  }
+
   $('#p-alertas').innerHTML = html;
 
   $$('[data-alert]').forEach(el => {
