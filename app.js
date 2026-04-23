@@ -8,7 +8,6 @@
 // ============================================================
 
 const DATA_URL = 'https://mikea.app.n8n.cloud/webhook/gr-dashboard';
-const TASKS_URL = './tasks.json';
 
 // --- Operational knowledge (hardcoded, curated) ---
 
@@ -107,22 +106,17 @@ function tagForStage(stage, stageLabel) {
 // --- Data fetch ---
 async function loadData() {
   try {
-    const [dealsRes, tasksRes] = await Promise.all([
-      fetch(DATA_URL),
-      fetch(TASKS_URL).catch(() => null)
-    ]);
+    const dealsRes = await fetch(DATA_URL);
     if (!dealsRes.ok) throw new Error('HTTP ' + dealsRes.status);
     DATA = await dealsRes.json();
     if (!DATA.ok) throw new Error('Webhook returned ok:false');
 
-    // Tasks are optional — dashboard works without them
-    if (tasksRes && tasksRes.ok) {
-      try { TASKS = await tasksRes.json(); } catch (e) { TASKS = null; }
-    } else if (window.location.protocol === 'file:') {
-      // Browsers block fetch of local files from file:// origin
-      // User needs to serve via http:// (GitHub Pages, local server, etc.)
-      console.warn('tasks.json no se puede cargar desde file:// — subir a GitHub Pages o usar un servidor local');
-    }
+    // Tasks ahora vienen del mismo webhook en DATA.tareas/DATA.statsTareas
+    // Adaptamos al shape que espera el renderer: { tareas, statsTareas }
+    TASKS = {
+      tareas: DATA.tareas || {},
+      statsTareas: DATA.statsTareas || {}
+    };
 
     updateTimer();
     updateFooter();
@@ -473,16 +467,11 @@ function renderClientes() {
 
 // --- PENDIENTES ---
 function renderPendientes() {
-  if (!TASKS) {
-    const isFile = window.location.protocol === 'file:';
+  if (!TASKS || !TASKS.tareas) {
     $('#p-pendientes').innerHTML = `
       <div class="section">
         <div class="section-title">Pendientes por Persona</div>
-        <div class="empty">
-          ${isFile
-            ? 'El navegador bloquea cargar <code>tasks.json</code> cuando abres el archivo directamente.<br>Sube los archivos a GitHub Pages y ahí van a funcionar las 214 tareas.'
-            : 'No se pudo cargar <code>tasks.json</code>.<br><small>Verificá que esté en la misma carpeta que <code>index.html</code>.</small>'}
-        </div>
+        <div class="empty">No hay tareas disponibles desde el webhook.<br><small>Aprieta "Actualizar" o verifica que n8n esté activo.</small></div>
       </div>
     `;
     return;
@@ -520,7 +509,7 @@ function renderPendientes() {
   });
 
   // Stats card
-  const s = TASKS.stats;
+  const s = TASKS.statsTareas || { total: 0, vencidas: 0, hoy: 0, proximas: 0, personas: {} };
   let html = `
     <div class="kpi-grid">
       <div class="kpi kpi-purple">
@@ -616,7 +605,7 @@ function renderPendientes() {
     html += `<div class="empty" style="padding:12px;font-size:11px;">Mostrando 150 de ${filtered.length} · Filtrá para ver más</div>`;
   }
   html += `<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);font-size:11px;color:var(--text-mute);">
-    Fuente: ${TASKS.fuente || 'HubSpot'} · Actualizado: ${new Date(TASKS.generadoEn).toLocaleDateString('es-MX')}
+    Fuente: HubSpot (live) · Actualizado: ${DATA && DATA.generadoEn ? new Date(DATA.generadoEn).toLocaleString('es-MX') : '—'}
   </div>`;
   html += `</div>`;
 
@@ -633,161 +622,83 @@ function renderPendientes() {
 
 // --- ALERTAS ---
 // Genera alertas dinámicamente desde DATA.deals + TASKS
-function buildAlerts() {
-  const alerts = [];
-  const hoy = new Date();
-  hoy.setHours(0, 0, 0, 0);
+// Lee los 3 grupos de alertas que el webhook ya computó en DATA.alertas
+function buildAlertsByGroup() {
+  const A = (DATA && DATA.alertas) || { sinAccion: [], renovaciones: [], prospeccionEstancada: [] };
 
-  // --- 1. Renovaciones próximas: tareas con "Renovación" o "VENCE" en el título ---
-  const renovaciones = [];
-  if (TASKS && TASKS.tareas) {
-    for (const [persona, tareas] of Object.entries(TASKS.tareas)) {
-      tareas.forEach(t => {
-        if (/(VENCE|Renovación|URGENTE.*ren)/i.test(t.title)) {
-          const days = daysUntil(t.date);
-          if (days !== null && days <= 90 && days >= -30) {
-            renovaciones.push({ ...t, persona, days });
-          }
-        }
-      });
-    }
-  }
-  // Dedup por cliente+date (evita la misma renovación aparezca 3 veces)
-  const renSeen = new Set();
-  const renUnicas = [];
-  renovaciones.sort((a, b) => a.days - b.days).forEach(r => {
-    const key = r.client + '|' + r.date;
-    if (!renSeen.has(key)) { renSeen.add(key); renUnicas.push(r); }
-  });
+  const sinAccion = (A.sinAccion || []).map(a => ({
+    deal: a.deal,
+    title: a.deal,
+    meta: `${a.stage || '—'} · ${a.owner || '—'} · ${fmtK(a.amount)}`,
+    body: a.motivo || 'Sin siguiente acción registrada.'
+  }));
 
-  renUnicas.slice(0, 6).forEach(r => {
-    const level = r.days < 0 ? 'crit' : (r.days <= 30 ? 'crit' : 'imp');
-    const diasTxt = r.days < 0 ? `VENCIDA hace ${Math.abs(r.days)} días` :
-                     r.days === 0 ? 'VENCE HOY' :
-                     `${r.days} días para vencimiento`;
-    alerts.push({
-      level,
-      title: `Renovación — ${r.client}`,
-      meta: `${diasTxt} · ${r.persona}`,
-      body: r.title
-    });
-  });
+  const renovaciones = (A.renovaciones || []).map(a => ({
+    deal: a.deal,
+    title: a.deal,
+    meta: `${a.owner || '—'} · ${fmtK(a.amount)} · ${a.renewDate || 'sin fecha'}`,
+    body: a.diasParaVencer < 0
+      ? `Vencida hace ${Math.abs(a.diasParaVencer)} días. Iniciar conversación YA.`
+      : a.diasParaVencer === 0
+        ? 'Vence HOY. Contactar cliente de inmediato.'
+        : `${a.diasParaVencer} días para vencimiento. Preparar renovación.`
+  }));
 
-  // --- 2. Propuestas sin movimiento (stage = Propuesta Enviada, closedate < hoy) ---
-  const propuestasVencidas = DATA.deals.filter(d =>
-    d.stage === 'presentationscheduled' &&
-    d.closedate &&
-    daysUntil(d.closedate) < 0
-  ).sort((a, b) => (b.amount || 0) - (a.amount || 0));
+  const prospeccionEstancada = (A.prospeccionEstancada || []).map(a => ({
+    deal: a.deal,
+    title: a.deal,
+    meta: `${a.stage || '—'} · ${a.owner || '—'} · ${fmtK(a.amount)}`,
+    body: a.motivo || 'Sin movimiento reciente.'
+  }));
 
-  propuestasVencidas.slice(0, 5).forEach(d => {
-    const dias = Math.abs(daysUntil(d.closedate));
-    alerts.push({
-      level: 'imp',
-      title: `${d.name} — Propuesta sin respuesta`,
-      meta: `Close date vencido hace ${dias} días · ${fmtK(d.amount)}`,
-      body: `Propuesta enviada a ${d.owner || 'cliente'}. Close date era ${d.closedate}. Hacer seguimiento urgente.`
-    });
-  });
-
-  // --- 3. Deals altos con close date pasada (cualquier stage activo) ---
-  const dealsVencidos = DATA.deals.filter(d => {
-    if (d.stage === 'closedwon' || d.stage === '1092009814') return false;
-    if (d.stage === 'presentationscheduled') return false; // ya contados arriba
-    if (!d.closedate) return false;
-    if ((d.amount || 0) < 20000) return false;
-    return daysUntil(d.closedate) < 0;
-  }).sort((a, b) => (b.amount || 0) - (a.amount || 0));
-
-  dealsVencidos.slice(0, 4).forEach(d => {
-    const dias = Math.abs(daysUntil(d.closedate));
-    alerts.push({
-      level: 'imp',
-      title: `${d.name} — Deal con fecha vencida`,
-      meta: `${d.stageLabel || d.stage} · Close ${d.closedate} (hace ${dias} días) · ${fmtK(d.amount)}`,
-      body: `Deal de ${fmtK(d.amount)} en ${d.stageLabel || d.stage}. Close date pasada. Revisar con ${d.owner || 'owner'} si sigue activo.`
-    });
-  });
-
-  // --- 4. Tareas HIGH vencidas (top 5 más viejas) ---
-  if (TASKS && TASKS.tareas) {
-    const tareasVencidasHigh = [];
-    for (const [persona, tareas] of Object.entries(TASKS.tareas)) {
-      tareas.forEach(t => {
-        if (t.urgency === 'vencida' && t.priority === 'HIGH') {
-          tareasVencidasHigh.push({ ...t, persona });
-        }
-      });
-    }
-    tareasVencidasHigh.sort((a, b) => a.date.localeCompare(b.date));
-
-    // Agrupar por persona para evitar saturar
-    const porPersona = {};
-    tareasVencidasHigh.forEach(t => {
-      porPersona[t.persona] = (porPersona[t.persona] || 0) + 1;
-    });
-
-    // Una alerta resumen por persona con >= 5 HIGH vencidas
-    Object.entries(porPersona)
-      .filter(([, n]) => n >= 5)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 4)
-      .forEach(([persona, n]) => {
-        alerts.push({
-          level: 'op',
-          title: `${persona} — ${n} tareas HIGH vencidas`,
-          meta: `Revisar en tab Pendientes filtrando por ${persona}`,
-          body: `${persona} tiene ${n} tareas marcadas HIGH con fecha pasada. Depurar: cerrar las completadas, repriorizar el resto.`
-        });
-      });
-  }
-
-  // --- 5. Deals grandes (>=$40K) sin actividad o sin owner ---
-  const grandesSinOwner = DATA.deals.filter(d =>
-    (d.amount || 0) >= 40000 &&
-    d.stage !== 'closedwon' &&
-    d.stage !== '1092009814' &&
-    !d.owner
-  );
-  if (grandesSinOwner.length > 0) {
-    alerts.push({
-      level: 'op',
-      title: `${grandesSinOwner.length} deal(s) grandes sin owner`,
-      meta: `${fmtK(grandesSinOwner.reduce((s, d) => s + (d.amount || 0), 0))} en juego · asignar HOY`,
-      body: grandesSinOwner.slice(0, 5).map(d => `· ${d.name} (${fmtK(d.amount)})`).join('<br>')
-    });
-  }
-
-  return alerts;
+  return { sinAccion, renovaciones, prospeccionEstancada };
 }
 
 function renderAlertas() {
-  const alertList = buildAlerts();
-  const grouped = {
-    crit: alertList.filter(a => a.level === 'crit'),
-    imp: alertList.filter(a => a.level === 'imp'),
-    op: alertList.filter(a => a.level === 'op')
-  };
+  const g = buildAlertsByGroup();
+  const total = g.sinAccion.length + g.renovaciones.length + g.prospeccionEstancada.length;
 
-  // Actualizar badge en la tab
+  // Badge en la tab
   const badge = $('#alerts-count');
-  if (badge) badge.textContent = alertList.length;
+  if (badge) badge.textContent = total;
+
+  const groups = [
+    {
+      key: 'sinAccion',
+      title: 'SIN SIGUIENTE ACCIÓN',
+      subtitle: 'Deals activos sin task abierta ni close date válido',
+      level: 'crit',
+      items: g.sinAccion
+    },
+    {
+      key: 'renovaciones',
+      title: 'RENOVACIONES PRÓXIMAS',
+      subtitle: 'Won con renovación en los próximos 120 días',
+      level: 'imp',
+      items: g.renovaciones
+    },
+    {
+      key: 'prospeccionEstancada',
+      title: 'PROSPECCIÓN ESTANCADA',
+      subtitle: 'Deals P_ con close vencida o sin actividad',
+      level: 'op',
+      items: g.prospeccionEstancada
+    }
+  ];
 
   let html = '';
-  const groups = [
-    ['crit', 'CRÍTICAS', 'crit'],
-    ['imp', 'IMPORTANTES', 'imp'],
-    ['op', 'OPERATIVAS', 'op']
-  ];
-  groups.forEach(([key, label]) => {
-    if (grouped[key].length === 0) return;
+  groups.forEach(grp => {
+    if (grp.items.length === 0) return;
     html += `<div class="section">
-      <div class="section-title">${label} <span class="section-count">${grouped[key].length}</span></div>`;
-    grouped[key].forEach((a, i) => {
-      html += `<div class="alert alert-${a.level}" data-alert="${key}-${i}">
+      <div class="section-title">
+        ${grp.title} <span class="section-count">${grp.items.length}</span>
+        <span style="margin-left:auto;color:var(--text-dim);font-size:11px;font-weight:400;">${grp.subtitle}</span>
+      </div>`;
+    grp.items.forEach((a, i) => {
+      html += `<div class="alert alert-${grp.level}" data-alert="${grp.key}-${i}">
         <div class="alert-header">
           <div class="alert-title">${a.title}</div>
-          <div class="alert-badge alert-badge-${a.level}">${a.level.toUpperCase()}</div>
+          <div class="alert-badge alert-badge-${grp.level}">${grp.level.toUpperCase()}</div>
         </div>
         <div class="alert-meta">${a.meta}</div>
         <div class="alert-body">${a.body}</div>
@@ -796,7 +707,7 @@ function renderAlertas() {
     html += `</div>`;
   });
 
-  if (alertList.length === 0) {
+  if (total === 0) {
     html = `<div class="section"><div class="empty">Sin alertas activas. Todo bajo control.</div></div>`;
   }
 
