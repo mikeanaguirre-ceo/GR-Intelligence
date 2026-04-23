@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GR Revenue Intelligence</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <header class="hdr">
+    <div class="hdr-left">
+      <div class="logo">G</div>
+      <div class="hdr-title">
+        <div class="hdr-main">GREAT REVENUE</div>
+        <div class="hdr-sub">Revenue Intelligence</div>
+      </div>
+    </div>
+    <div class="hdr-right">
+      <span class="live-badge"><span class="dot"></span> LIVE</span>
+      <button id="btn-refresh" class="btn-refresh">↻ Actualizar</button>
+      <span id="timer" class="timer">—</span>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-tab="recap">Recap</button>
+    <button class="tab" data-tab="overview">Overview</button>
+    <button class="tab" data-tab="pipeline">Pipeline</button>
+    <button class="tab" data-tab="won">Won</button>
+    <button class="tab" data-tab="clientes">Clientes</button>
+    <button class="tab" data-tab="pendientes">Pendientes</button>
+    <button class="tab" data-tab="alertas">Alertas <span class="badge-red">8</span></button>
+    <button class="tab" data-tab="amplemarket">Amplemarket</button>
+    <button class="tab" data-tab="forecast">Forecast</button>
+  </nav>
+
+  <main id="panels">
+    <section class="panel active" id="p-recap"><div class="loading">Cargando datos en vivo…</div></section>
+    <section class="panel" id="p-overview"></section>
+    <section class="panel" id="p-pipeline"></section>
+    <section class="panel" id="p-won"></section>
+    <section class="panel" id="p-clientes"></section>
+    <section class="panel" id="p-pendientes"></section>
+    <section class="panel" id="p-alertas"></section>
+    <section class="panel" id="p-amplemarket"></section>
+    <section class="panel" id="p-forecast"></section>
+  </main>
+
+  <footer class="ftr">
+    <span>GR Revenue Intelligence · HubSpot 49671716</span>
+    <span id="ftr-deals">—</span>
+  </footer>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
